@@ -1,56 +1,62 @@
-package twoFA
+package main
 
 import (
-	"fmt"
+	"encoding/base32"
+	"strings"
 	"testing"
 )
 
-type Tt struct {
-	name string
-	t    func(t *testing.T)
+func TestGetSecret(t *testing.T) {
+	secret := GetSecret()
+	if len(secret) < 16 {
+		t.Error("secret too short")
+	}
+	// 验证是否为有效的base32编码
+	if _, err := base32.StdEncoding.DecodeString(padSecret(secret)); err != nil {
+		t.Error("invalid base32 encoding")
+	}
 }
 
-func Test_All(t *testing.T) {
-	tests := []Tt{
-		{"生成secret测试", func(t *testing.T) {
-			secret := GetSecret()
-			if secret == "" {
-				t.Error("生成密钥出错")
-			}
-			fmt.Println("secret:", secret)
-		}},
-		{"生成secret测试", func(t *testing.T) {
-			secret := "WRO4QNSWJZLKTG6LYFWQLQQAR3N3DCMR"
-			code, er := GetCode(secret)
-			if er != nil {
-				fmt.Println(er)
-				t.Failed()
-			}
-			fmt.Println("code:", code)
-		}},
-		{"生成code并验证", func(t *testing.T) {
-			secret := "WRO4QNSWJZLKTG6LYFWQLQQAR3N3DCMR"
-			code, er := GetCode(secret)
-			if er != nil {
-				fmt.Println(er)
-				t.Failed()
-			}
-			result, er := VerifyCode(secret, code) //极小的概率会在临界点失败，这里默认不失败
-			if !result || er != nil {
-				t.Failed()
-			}
-			fmt.Println("code:", code)
-		}},
-		{"生成Qrcode所需的字符串", func(t *testing.T) {
-			secret := "WRO4QNSWJZLKTG6LYFWQLQQAR3N3DCMR"
-			qrData := GetQrCodeData("test", secret)
-			if len(qrData) == 0 {
-				t.Failed()
-			}
-			fmt.Println(qrData)
-		}},
+func TestGetCode(t *testing.T) {
+	secret := "JBSWY3DPEHPK3PXP"
+	code, err := GetCode(secret)
+	if err != nil {
+		t.Errorf("GetCode error: %v", err)
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, tt.t)
+	if len(code) != digits {
+		t.Errorf("code length should be %d, got %d", digits, len(code))
+	}
+}
+
+func TestVerifyCode(t *testing.T) {
+	secret := "JBSWY3DPEHPK3PXP"
+	code, _ := GetCode(secret)
+	valid, err := VerifyCode(secret, code)
+	if err != nil {
+		t.Errorf("VerifyCode error: %v", err)
+	}
+	if !valid {
+		t.Error("code should be valid")
+	}
+
+	// 测试无效的验证码
+	valid, err = VerifyCode(secret, "000000")
+	if err != nil {
+		t.Errorf("VerifyCode error: %v", err)
+	}
+	if valid {
+		t.Error("invalid code should not be valid")
+	}
+}
+
+func TestGetQrCodeData(t *testing.T) {
+	secret := "JBSWY3DPEHPK3PXP"
+	account := "test@example.com"
+	uri := GetQrCodeData(account, secret)
+	if !strings.HasPrefix(uri, "otpauth://totp/") {
+		t.Error("invalid URI format")
+	}
+	if !strings.Contains(uri, secret) {
+		t.Error("URI should contain secret")
 	}
 }

@@ -1,92 +1,107 @@
-package twoFA
+package main
 
 import (
-	"bytes"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha1"
 	"encoding/base32"
 	"encoding/binary"
 	"fmt"
-	"math/big"
+	"net/url"
 	"strings"
 	"time"
 )
 
-func UnixNanoRandom() int64 { //这里主要想增加一些随机性，从而使生成的密钥在范围内随机偏移
-	n, _ := rand.Int(rand.Reader, big.NewInt(200000000))
-	n = n.Sub(n, big.NewInt(1000000000))
-	return (time.Now().UnixNano() - n.Int64()) / 1000 / 30
-}
+const (
+	digits = 6  // TOTP码的位数
+	period = 30 // TOTP的时间窗口(秒)
+	skew   = 1  // 允许的时间偏差单位
+)
 
-func HmacSha1(key, data []byte) []byte {
-	h := hmac.New(sha1.New, key)
-	if total := len(data); total > 0 {
-		h.Write(data)
-	}
-	return h.Sum(nil)
-}
-
-func Base32encode(src []byte) string {
-	return base32.StdEncoding.EncodeToString(src)
-}
-
-func Base32decode(s string) ([]byte, error) {
-	return base32.StdEncoding.DecodeString(s)
-}
-
-func Int64ToBytes(value int64) []byte {
-	var result []byte
-	mask := int64(0xFF)
-	shifts := [8]uint16{56, 48, 40, 32, 24, 16, 8, 0}
-	for _, shift := range shifts {
-		result = append(result, byte((value>>shift)&mask))
-	}
-	return result
-}
-
-func BytesToUint32(bts []byte) uint32 {
-	return (uint32(bts[0]) << 24) + (uint32(bts[1]) << 16) +
-		(uint32(bts[2]) << 8) + uint32(bts[3])
-}
-
-func genOneTimePassword(key []byte, data []byte) uint32 {
-	hash := HmacSha1(key, data)
-	offset := hash[len(hash)-1] & 0x0F
-	hashParts := hash[offset : offset+4]
-	hashParts[0] = hashParts[0] & 0x7F
-	number := BytesToUint32(hashParts)
-	return number % 1000000
-}
-
-// 获取秘钥
+// GetSecret 生成随机的2FA密钥
 func GetSecret() string {
-	var buf bytes.Buffer
-	binary.Write(&buf, binary.BigEndian, UnixNanoRandom())
-	return strings.ToUpper(Base32encode(HmacSha1(buf.Bytes(), nil)))
+	b := make([]byte, 20)
+	if _, err := rand.Read(b); err != nil {
+		return ""
+	}
+	return strings.TrimRight(base32.StdEncoding.EncodeToString(b), "=")
 }
 
-// 获取动态码
+// GetCode 根据密钥生成当前时间的TOTP码
 func GetCode(secret string) (string, error) {
-	secretUpper := strings.ToUpper(secret)
-	secretKey, err := Base32decode(secretUpper)
+	// 解码base32密钥
+	key, err := base32.StdEncoding.DecodeString(padSecret(secret))
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("invalid secret: %v", err)
 	}
-	number := genOneTimePassword(secretKey, Int64ToBytes(time.Now().Unix()/30))
-	return fmt.Sprintf("%06d", number), nil
+
+	// 获取当前时间戳
+	counter := uint64(time.Now().Unix() / period)
+
+	return generateCode(key, counter), nil
 }
 
-// 获取动态码二维码内容
-func GetQrCodeData(user, secret string) string {
-	return fmt.Sprintf("otpauth://totp/%s?secret=%s", user, secret)
-}
-
-// 验证动态码
+// VerifyCode 验证TOTP码是否有效
 func VerifyCode(secret, code string) (bool, error) {
-	_code, err := GetCode(secret)
+	key, err := base32.StdEncoding.DecodeString(padSecret(secret))
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("invalid secret: %v", err)
 	}
-	return _code == code, nil
+
+	// 获取当前时间戳
+	now := time.Now().Unix()
+	counter := now / period
+
+	// 检查前后时间窗口的码
+	for i := -skew; i <= skew; i++ {
+		if generateCode(key, uint64(counter+int64(i))) == code {
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
+// GetQrCodeData 生成用于二维码的URI
+func GetQrCodeData(account, secret string) string {
+	return fmt.Sprintf("otpauth://totp/%s?secret=%s",
+		url.QueryEscape(account),
+		secret)
+}
+
+// generateCode 根据密钥和计数器生成TOTP码
+func generateCode(key []byte, counter uint64) string {
+	// 将计数器转换为字节数组
+	b := make([]byte, 8)
+	binary.BigEndian.PutUint64(b, counter)
+
+	// 计算HMAC-SHA1
+	h := hmac.New(sha1.New, key)
+	h.Write(b)
+	hash := h.Sum(nil)
+
+	// 获取偏移量
+	offset := hash[len(hash)-1] & 0xf
+
+	// 生成4字节的代码
+	binary := binary.BigEndian.Uint32(hash[offset : offset+4])
+	binary &= 0x7fffffff
+
+	// 取模得到指定位数的代码
+	mod := uint32(1)
+	for i := 0; i < digits; i++ {
+		mod *= 10
+	}
+	code := binary % mod
+
+	// 格式化为固定位数的字符串
+	return fmt.Sprintf(fmt.Sprintf("%%0%dd", digits), code)
+}
+
+// padSecret 补全base32编码的等号
+func padSecret(secret string) string {
+	if m := len(secret) % 8; m != 0 {
+		secret += strings.Repeat("=", 8-m)
+	}
+	return secret
 }
