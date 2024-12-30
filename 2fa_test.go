@@ -1,4 +1,4 @@
-package main
+package twoFA
 
 import (
 	"encoding/base32"
